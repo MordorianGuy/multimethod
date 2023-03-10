@@ -5,13 +5,8 @@ import functools
 import inspect
 import itertools
 import types
-from typing import Any, Callable, Dict, Iterable, Iterator, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, Literal, Mapping, Optional, Tuple
 from typing import TypeVar, Union, get_type_hints, no_type_check, overload as tp_overload
-
-try:
-    from typing import Literal
-except ImportError:  # pragma: no cover
-    Literal = None  # type: ignore
 
 __version__ = '1.9.1'
 Empty = types.new_class('*')
@@ -113,6 +108,9 @@ class subtype(type):
             and all(map(issubclass, args, self.__args__))
         )
 
+    def __instancecheck__(self, instance):
+        return issubclass(self.get_type(instance), self)
+
     @classmethod
     def subcheck(cls, tp: type) -> bool:
         """Return whether type requires checking subscripts using `get_type`."""
@@ -142,9 +140,10 @@ class subtype(type):
                 return subtype(Literal, arg)
             return type(arg)
         if self.__origin__ is Union:  # find the most specific match
-            tps = {subtype.get_type(tp_arg, arg) for tp_arg in self.__args__}
-            if tps > {types.FunctionType}:  # not issubclass(Callable, FunctionType)
-                tps.remove(types.FunctionType)
+            tps = (subtype.get_type(tp_arg, arg) for tp_arg in self.__args__)
+            tps = {tp for tp, tp_arg in zip(tps, self.__args__) if issubclass(tp, tp_arg)}
+            if not tps:
+                return type(arg)
             return functools.reduce(lambda l, r: l if issubclass(l, r) else r, tps)  # noqa: E741
         if self.__origin__ is Callable.__origin__ and isinstance(arg, Callable):
             return subtype(Callable.__origin__, *get_type_hints(arg).values())
@@ -160,8 +159,11 @@ class subtype(type):
             args = next(iter(arg.items()), ())
         else:  # check first value
             args = itertools.islice(arg, 1)
-        subscripts = list(map(subtype.get_type, self.__args__, args))
-        return subtype(type(arg), *(subscripts or [Empty]))
+        subscripts = list(map(subtype.get_type, self.__args__, args)) or [Empty]
+        try:
+            return subtype(type(arg), *subscripts)
+        except TypeError:  # not an acceptable base type
+            return subtype(self.__origin__, *subscripts)
 
 
 def distance(cls, subclass: type) -> int:
@@ -347,7 +349,7 @@ RETURN = TypeVar("RETURN")
 
 
 class multidispatch(multimethod, Dict[Tuple[type, ...], Callable[..., RETURN]]):
-    """Provisional wrapper for compatibility with `functools.singledispatch`.
+    """Wrapper for compatibility with `functools.singledispatch`.
 
     Only uses the [register][multimethod.multimethod.register] method instead of namespace lookup.
     Allows dispatching on keyword arguments based on the first function signature.
@@ -379,6 +381,7 @@ class multidispatch(multimethod, Dict[Tuple[type, ...], Callable[..., RETURN]]):
 
 def isa(*types: type) -> Callable:
     """Partially bound `isinstance`."""
+    types = tuple(map(subtype, types))
     return lambda arg: isinstance(arg, types)
 
 
@@ -400,7 +403,7 @@ class overload(dict):
 
     def __call__(self, *args, **kwargs):
         """Dispatch to first matching function."""
-        for sig in reversed(list(self)):  # Python >=3.8 dicts support `reversed`
+        for sig in reversed(self):
             try:
                 arguments = sig.bind(*args, **kwargs).arguments
             except TypeError:

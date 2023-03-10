@@ -1,10 +1,9 @@
 import sys
 import pytest
-from typing import Callable, Generic, List, Sequence, Type, TypeVar
+from typing import Callable, Generic, Iterable, List, Sequence, Type, TypeVar
 from multimethod import multimethod, subtype, DispatchError
 
 
-@pytest.mark.skipif(sys.version_info < (3, 8), reason="Literal added in 3.8")
 def test_literals():
     from typing import Literal
 
@@ -105,3 +104,10 @@ def test_callable():
     assert func(g) == 'g'
     assert func([g]) == 'g0'
     assert func(h) is ...
+
+
+def test_final():
+    tp = subtype(Iterable[str])
+    d = {'': 0}
+    assert issubclass(tp.get_type(d), tp)
+    assert issubclass(tp.get_type(d.keys()), tp)
